@@ -1,4 +1,4 @@
-# ru-corp-intel
+# osint-ru-companies
 
 Корпоративная разведка по российским юридическим лицам на бесплатных
 официальных источниках. Работает как навык Claude Code и как набор
@@ -61,7 +61,7 @@ Python 3.9+ из коробки, зависимостей нет. Опциона
 Как навык Claude Code:
 
 ```bash
-ln -s "$(pwd)" ~/.claude/skills/ru-corp-intel
+ln -s "$(pwd)" ~/.claude/skills/osint-ru-companies
 ```
 
 База по умолчанию — `data/corp.db`, путь меняется через `--db` или переменную
