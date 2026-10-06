@@ -188,6 +188,47 @@ CREATE TABLE IF NOT EXISTS sout (
 );
 CREATE INDEX IF NOT EXISTS ix_sout_inn ON sout(inn);
 CREATE INDEX IF NOT EXISTS ix_sout_addr ON sout(address_key);
+
+-- GIS ZhKH: housing management licences, houses under them with dates, and
+-- for each house every licence that ever covered it. Dates on house records are
+-- what make transfers between companies visible.
+CREATE TABLE IF NOT EXISTS gzhkh_licenses (
+    guid TEXT PRIMARY KEY, number TEXT, erul_number TEXT, inn TEXT, ogrn TEXT,
+    name TEXT, status TEXT, start_date TEXT, expiration_date TEXT,
+    house_count INTEGER, phone TEXT, email TEXT, region TEXT, fetched_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_gl_inn ON gzhkh_licenses(inn);
+CREATE TABLE IF NOT EXISTS gzhkh_houses (
+    license_guid   TEXT NOT NULL,
+    inn            TEXT,
+    house_guid     TEXT NOT NULL DEFAULT '',
+    address        TEXT,
+    address_key    TEXT,
+    status         TEXT NOT NULL,      -- INCLUDED | EXCLUDED | CANCELED
+    inclusion_date TEXT NOT NULL DEFAULT '',
+    exclusion_date TEXT,
+    PRIMARY KEY (license_guid, house_guid, status, inclusion_date)
+);
+CREATE INDEX IF NOT EXISTS ix_gh_house ON gzhkh_houses(house_guid);
+CREATE INDEX IF NOT EXISTS ix_gh_inn ON gzhkh_houses(inn);
+CREATE TABLE IF NOT EXISTS gzhkh_house_licensees (
+    house_guid TEXT NOT NULL, license_guid TEXT NOT NULL, inn TEXT, name TEXT,
+    license_status TEXT, PRIMARY KEY (house_guid, license_guid)
+);
+CREATE TABLE IF NOT EXISTS gzhkh_orgs (
+    inn TEXT PRIMARY KEY, guid TEXT, phone TEXT, email TEXT, fact_address TEXT,
+    fetched_at INTEGER
+);
+
+-- Register of persons disqualified by a court (FNS open data). There is no
+-- personal INN in it, so matches against our people are made by name and
+-- graded by whether the organisation also matches.
+CREATE TABLE IF NOT EXISTS disqualified (
+    record_no TEXT PRIMARY KEY, fio TEXT, fio_key TEXT, birth_date TEXT,
+    birth_place TEXT, org_name TEXT, org_inn TEXT, position TEXT, article TEXT,
+    authority TEXT, term TEXT, start_date TEXT, end_date TEXT, loaded_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_disq_fio ON disqualified(fio_key);
 """
 
 

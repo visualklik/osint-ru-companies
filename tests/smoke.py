@@ -19,10 +19,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import db          # noqa: E402
 import egrul       # noqa: E402
 import erknm       # noqa: E402
+import gis_zhkh    # noqa: E402
 import girbo       # noqa: E402
 import kad         # noqa: E402
 import people      # noqa: E402
 import rostrud     # noqa: E402
+import opendata    # noqa: E402
 
 FAILURES = []
 
@@ -221,6 +223,17 @@ check("при расхождении длин численность не выд
       [w["headcount"] for w in drift], [None, None, None])
 check("должности при этом сохранены", len(drift), 3)
 
+section("ГИС ЖКХ — телефоны и блоки номеров")
+check("+7(xxxx) в десять цифр", gis_zhkh.norm_phone("+7(8652)998080"), "8652998080")
+check("одиннадцать цифр с 7", gis_zhkh.norm_phone("78652451717"), "8652451717")
+check("мусор не телефон", gis_zhkh.norm_phone("12-34"), None)
+check("блок городского номера", gis_zhkh.phone_block("78652451717"), "865245")
+check("у мобильного блока нет", gis_zhkh.phone_block("+7(928)3016220"), None)
+check("зеркальный хвост", gis_zhkh.is_vanity("+7(8652)997070"), True)
+check("обычный хвост", gis_zhkh.is_vanity("78652992428"), False)
+check("сокращение формы", gis_zhkh.short_name(
+      'ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ "УПРАВЛЯЮЩАЯ КОМПАНИЯ "ПРИМЕР"'), 'ООО "УК "ПРИМЕР"')
+
 section("Схема базы создаётся начисто")
 con = db.connect(":memory:") if False else None
 import sqlite3, tempfile  # noqa: E402
@@ -232,7 +245,8 @@ with tempfile.TemporaryDirectory() as tmp:
     expected = {"orgs", "persons", "roles", "ownership", "financials", "crawl_queue",
                 "cases", "court_cases", "court_parties", "headcount", "tax_debt",
                 "revexp", "tax_regime", "opendata_loads", "person_orgs",
-                "inspections", "sout"}
+                "inspections", "sout", "gzhkh_licenses", "gzhkh_houses",
+                "gzhkh_house_licensees", "gzhkh_orgs", "disqualified"}
     check("все таблицы созданы", expected - tables, set())
 
     db.upsert_org(con, {"inn": "1", "name_short": "А",
@@ -249,6 +263,18 @@ with tempfile.TemporaryDirectory() as tmp:
     db.add_ownership(con, "1", owner_inn="2", kind="manager")
     check("участник и управляющая организация — разные связи",
           con.execute("SELECT COUNT(*) FROM ownership").fetchone()[0], 2)
+
+    # Реестр дисквалифицированных: сила совпадения зависит от организации
+    pid = db.upsert_person(con, "777777777777", "Сидоров Сидор Сидорович")
+    db.add_role(con, "1", pid, "ДИРЕКТОР")
+    pid2 = db.upsert_person(con, "888888888888", "Кузнецов Кузьма Кузьмич")
+    db.add_role(con, "1", pid2, "ДИРЕКТОР")
+    for no, fio, org in (("1", "СИДОРОВ СИДОР СИДОРОВИЧ", "1"), ("2", "КУЗНЕЦОВ КУЗЬМА КУЗЬМИЧ", "9")):
+        con.execute("INSERT INTO disqualified (record_no, fio, fio_key, org_inn) VALUES (?,?,?,?)",
+                    (no, fio, db.norm_fio(fio), org))
+    grades = sorted((g, r["fio"]) for g, r, _ in opendata.disq_matches(con))
+    check("совпадение ФИО и организации — strong, только ФИО — name", grades,
+          [("name", "Кузнецов Кузьма Кузьмич"), ("strong", "Сидоров Сидор Сидорович")])
     con.commit()
 
 print()

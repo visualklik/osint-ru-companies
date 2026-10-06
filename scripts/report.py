@@ -53,6 +53,18 @@ def cmd_dossier(args):
     else:
         out.append("_нет данных_")
 
+    try:
+        import opendata
+        flagged = [m for m in opendata.disq_matches(con, [args.inn])]
+    except Exception:
+        flagged = []
+    if flagged:
+        out.append("\n### Реестр дисквалифицированных лиц\n")
+        for grade, r, _ in flagged:
+            how = "ФИО и организация совпали" if grade == "strong" else "совпало только ФИО — сверить дату рождения"
+            out.append(f"- **{r['fio']}** — {how}: {r['position']} в {r['org_name']}, "
+                       f"срок {r['term']}, {r['start_date']} — {r['end_date']}")
+
     out.append("\n## Владельцы\n")
     owners = con.execute(
         """SELECT own.kind, own.share_pct, own.share_rub, p.fio, p.inn AS pinn,
@@ -125,6 +137,28 @@ def cmd_dossier(args):
         for d in debts[:15]:
             out.append(f"- {d['date']} · {d['tax']}: недоимка {money(d['debt'])}, "
                        f"пени {money(d['penalty'])}, штраф {money(d['fine'])}")
+
+    gl = con.execute("SELECT * FROM gzhkh_licenses WHERE inn=?", (args.inn,)).fetchall()
+    gorg = con.execute("SELECT phone FROM gzhkh_orgs WHERE inn=?", (args.inn,)).fetchone()
+    if gl or gorg:
+        import gis_zhkh
+        out.append("\n## ГИС ЖКХ\n")
+        if gorg and gorg["phone"]:
+            out.append(f"- телефон в карточке организации: {gis_zhkh.pretty(gorg['phone'])}")
+        for l in gl:
+            out.append(f"- лицензия {l['number']} ({l['status']}), с {l['start_date']}, "
+                       f"домов {l['house_count']}; тел. {gis_zhkh.pretty(l['phone'])}, "
+                       f"email {l['email'] or '—'}")
+        moved = [r for r in gis_zhkh.transfers(con, [args.inn])]
+        if moved:
+            nm = gis_zhkh.names(con)
+            agg = {}
+            for r in moved:
+                key = ("отдала", r["to_inn"]) if r["from_inn"] == args.inn else ("получила", r["from_inn"])
+                agg[key] = agg.get(key, 0) + 1
+            out.append("\n### Передачи домов\n")
+            for (way, other), n in sorted(agg.items(), key=lambda x: -x[1]):
+                out.append(f"- {way} {n} дом(ов): {nm.get(other) or other} [{other}]")
 
     sout = con.execute(
         """SELECT decl_date, address, position, headcount FROM sout

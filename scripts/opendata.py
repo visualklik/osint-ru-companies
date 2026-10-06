@@ -178,6 +178,100 @@ def load(con, code, force=False):
     return total
 
 
+# --- register of disqualified persons (CSV, not XML) ------------------------
+
+DISQ_PAGE = "https://www.nalog.gov.ru/opendata/7707329152-registerdisqualified/"
+
+
+def discover_disq_url():
+    req = urllib.request.Request(DISQ_PAGE, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=90) as r:
+        page = r.read().decode("utf-8", errors="replace")
+    urls = set(re.findall(
+        r"https?://[a-z.]*nalog\.(?:gov\.)?ru/opendata/7707329152-registerdisqualified/"
+        r"data-(\d{8})-structure-\d+\.csv", page))
+    full = re.findall(
+        r"(https?://[a-z.]*nalog\.(?:gov\.)?ru/opendata/7707329152-registerdisqualified/"
+        r"data-\d{8}-structure-\d+\.csv)", page)
+    if not full:
+        raise RuntimeError("на странице набора нет ссылки на CSV")
+    # The date in the file name is YYYYMMDD here, so a plain sort is chronological.
+    return sorted(set(full), key=lambda u: re.search(r"data-(\d{8})", u).group(1))[-1]
+
+
+def load_disqualified(con):
+    import csv
+    url = discover_disq_url()
+    print(f"  скачиваю {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        text = r.read().decode("utf-8-sig", errors="replace")
+    rows = list(csv.reader(io.StringIO(text)))
+    # The published structure file names the columns GA, GB, G1..G12, but the
+    # data header reads G1..G14: same fourteen fields, renumbered. Columns are
+    # therefore taken by position, not by header name.
+    con.execute("DELETE FROM disqualified")
+    n = 0
+    for r in rows[1:]:
+        if len(r) < 14 or not r[1].strip():
+            continue
+        con.execute(
+            """INSERT OR REPLACE INTO disqualified
+               (record_no, fio, fio_key, birth_date, birth_place, org_name, org_inn,
+                position, article, authority, term, start_date, end_date, loaded_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (r[0], r[1].strip(), db.norm_fio(r[1]), r[2], r[3], r[4].strip(),
+             r[5].strip(), r[6].strip(), r[7], r[8], r[11], r[12], r[13], int(time.time())))
+        n += 1
+    con.execute(
+        "INSERT OR REPLACE INTO opendata_loads (dataset, url, rows, loaded_at) VALUES (?,?,?,?)",
+        ("registerdisqualified", url, n, int(time.time())))
+    con.commit()
+    print(f"  реестр дисквалифицированных лиц: {n} записей")
+    return n
+
+
+def disq_matches(con, inns=None):
+    """Our people found in the register, graded by how much else agrees.
+
+    strong  — name matches and the organisation INN in the register is one of
+              the companies this person is linked to in our database;
+    name    — name only. Common surnames make this a lead, never a finding.
+    """
+    q = """SELECT DISTINCT p.pid, p.fio, p.inn AS person_inn, d.*
+           FROM persons p JOIN disqualified d ON d.fio_key = p.fio_key
+           WHERE p.fio_key <> ''"""
+    out = []
+    for r in con.execute(q).fetchall():
+        linked = {x["org_inn"] for x in con.execute(
+            "SELECT org_inn FROM roles WHERE pid=? UNION SELECT org_inn FROM ownership WHERE pid=?",
+            (r["pid"], r["pid"]))}
+        if inns and not (linked & set(inns)):
+            continue
+        grade = "strong" if r["org_inn"] and r["org_inn"] in linked else "name"
+        out.append((grade, r, linked))
+    return out
+
+
+def cmd_disq(args):
+    con = db.connect(args.db)
+    if args.load or not con.execute("SELECT 1 FROM disqualified LIMIT 1").fetchone():
+        load_disqualified(con)
+    inns = None
+    if args.case:
+        inns = [r["inn"] for r in con.execute("SELECT inn FROM cases WHERE name=?", (args.case,))]
+    found = disq_matches(con, inns)
+    print("\n## Дисквалифицированные лица среди фигурантов\n")
+    if not found:
+        print("_совпадений нет_")
+    for grade, r, linked in sorted(found, key=lambda x: x[0] != "strong"):
+        tag = "**совпадение ФИО и организации**" if grade == "strong" else "совпадение только по ФИО — проверить дату рождения"
+        print(f"- {r['fio']} (ИНН {r['person_inn'] or '—'}) — {tag}")
+        print(f"    в реестре: {r['position']} в {r['org_name']} [{r['org_inn'] or '—'}], "
+              f"{r['article']}, срок {r['term']}, {r['start_date']} — {r['end_date']}")
+        print(f"    дата рождения в реестре: {r['birth_date']}, место: {r['birth_place']}")
+
+
 def cmd_load(args):
     con = db.connect(args.db)
     codes = list(DATASETS) if args.all else args.dataset
@@ -253,6 +347,11 @@ def main():
     p.add_argument("--all", action="store_true")
     p.add_argument("--force", action="store_true", help="re-download even if cached")
     p.set_defaults(func=cmd_load)
+
+    p = sub.add_parser("disq", help="сверить людей из базы с реестром дисквалифицированных лиц")
+    p.add_argument("--case")
+    p.add_argument("--load", action="store_true", help="перекачать реестр")
+    p.set_defaults(func=cmd_disq)
 
     p = sub.add_parser("show", help="everything indexed for one INN")
     p.add_argument("inn")

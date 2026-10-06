@@ -204,6 +204,25 @@ def cmd_links(args):
     if not rows:
         print("_нет_")
 
+    # Houses handed from one licensee to another are a dated behavioural tie;
+    # only GIS ZhKH records them.
+    print("\n## Передачи домов между УК (ГИС ЖКХ)\n")
+    import gis_zhkh
+    scope_inns = [r["inn"] for r in con.execute(
+        "SELECT inn FROM cases WHERE name=?", (args.case,))] if args.case else None
+    pairs = {}
+    for r in gis_zhkh.transfers(con, scope_inns):
+        if scope_inns and not (r["from_inn"] in scope_inns and r["to_inn"] in scope_inns):
+            continue
+        pairs.setdefault((r["from_inn"], r["to_inn"]), []).append(r)
+    nm = gis_zhkh.names(con)
+    for (a, b), items in sorted(pairs.items(), key=lambda x: -len(x[1])):
+        dates = sorted(i["exclusion_date"] for i in items)
+        print(f"- {nm.get(a) or a} [{a}] → {nm.get(b) or b} [{b}] — домов {len(items)}, "
+              f"{dates[0]} … {dates[-1]}")
+    if not pairs:
+        print("_нет (загрузите: python3 gis_zhkh.py load --case <дело> --history --deep)_")
+
     # Two targets meeting in the same case is an economic tie no registry records.
     print("\n## Общие арбитражные дела\n")
     court_scope = ""
