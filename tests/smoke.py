@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 import db          # noqa: E402
 import egrul       # noqa: E402
+import eis         # noqa: E402
 import erknm       # noqa: E402
 import gis_zhkh    # noqa: E402
 import girbo       # noqa: E402
@@ -224,6 +225,23 @@ check("при расхождении длин численность не выд
 check("должности при этом сохранены", len(drift), 3)
 
 section("ГИС ЖКХ — телефоны и блоки номеров")
+# ЕИС: разбор карточек выдачи
+EIS_CONTRACT = """<div class="search-results__total">12 записей</div>
+<div class="search-registry-entry-block box-shadow-search-input">
+<div class="registry-entry__header-mid__number"><a href="/epz/contract/contractCard/common-info.html?reestrNumber=1111111111111000001">№ 1</a></div>
+<div class="registry-entry__header-mid__title">Исполнение</div>
+<div class="registry-entry__body-title">Заказчик</div>
+<div class="registry-entry__body-href"><a href="/epz/organization/view/info.html?organizationId=42">МБОУ &quot;Школа&quot;</a></div>
+<div class="price-block__title">Цена контракта</div>
+<div class="price-block__value">31 085,99&nbsp;&#8381;</div>
+<div class="data-block__title">Заключение контракта</div><div class="data-block__value">01.02.2024</div>
+</div>"""
+_c = eis._cards(EIS_CONTRACT)
+check("ЕИС: одна карточка", len(_c), 1)
+check("ЕИС: всего записей", eis._total(EIS_CONTRACT), 12)
+check("ЕИС: цена с копейками", eis._money(eis._field(_c[0], "Цена контракта")), 31085.99)
+check("ЕИС: дата заключения", eis._field(_c[0], "Заключение контракта"), "01.02.2024")
+
 check("+7(xxxx) в десять цифр", gis_zhkh.norm_phone("+7(8652)998080"), "8652998080")
 check("одиннадцать цифр с 7", gis_zhkh.norm_phone("78652451717"), "8652451717")
 check("мусор не телефон", gis_zhkh.norm_phone("12-34"), None)
@@ -246,7 +264,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 "cases", "court_cases", "court_parties", "headcount", "tax_debt",
                 "revexp", "tax_regime", "opendata_loads", "person_orgs",
                 "inspections", "sout", "gzhkh_licenses", "gzhkh_houses",
-                "gzhkh_house_licensees", "gzhkh_orgs", "disqualified"}
+                "gzhkh_house_licensees", "gzhkh_orgs", "disqualified", "gzhkh_disqualified"}
     check("все таблицы созданы", expected - tables, set())
 
     db.upsert_org(con, {"inn": "1", "name_short": "А",
@@ -275,6 +293,24 @@ with tempfile.TemporaryDirectory() as tmp:
     grades = sorted((g, r["fio"]) for g, r, _ in opendata.disq_matches(con))
     check("совпадение ФИО и организации — strong, только ФИО — name", grades,
           [("name", "Кузнецов Кузьма Кузьмич"), ("strong", "Сидоров Сидор Сидорович")])
+
+    # Отраслевой реестр ГИС ЖКХ: совпадение по ИНН организации — отдельный класс
+    con.execute("INSERT INTO gzhkh_disqualified (guid, fio, fio_key, org_inn) VALUES (?,?,?,?)",
+                ("g1", "Петров Петр", db.norm_fio("Петров Петр"), "1"))
+    con.execute("INSERT INTO gzhkh_disqualified (guid, fio, fio_key, org_inn) VALUES (?,?,?,?)",
+                ("g2", "Сидоров Сидор Сидорович", db.norm_fio("Сидоров Сидор Сидорович"), "1"))
+    got = sorted(g for g, _, _ in gis_zhkh.disq_matches(con))
+    check("ГИС ЖКХ: компания и человек дают org и strong", got, ["org", "org", "strong"])
+
+    # ЕИС: общий заказчик у двух поставщиков — связь
+    eis.store(con, "1", [{"number": "100", "customer": "Заказчик А", "customer_eis_id": "5",
+                          "object": None, "price": 10.0, "status": None, "signed": None,
+                          "until": None, "law": "44-ФЗ"}], [])
+    eis.store(con, "2", [{"number": "200", "customer": "Заказчик А", "customer_eis_id": "5",
+                          "object": None, "price": 5.0, "status": None, "signed": None,
+                          "until": None, "law": "44-ФЗ"}], [])
+    sc = eis.shared_customers(con, ["1", "2"])
+    check("ЕИС: общий заказчик найден", [(r["n"], r["total"]) for r in sc], [(2, 15.0)])
     con.commit()
 
 print()

@@ -38,6 +38,7 @@ import db
 BASE = "https://dom.gosuslugi.ru"
 RLS = BASE + "/rls/api/rest/services/license/public"
 PPA = BASE + "/ppa/api/rest/services/ppa/public/organizations/searchByOrg"
+DISQ = BASE + "/licenses/api/rest/services/public/disqualified/person/search"
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 PAGE = 100
@@ -459,6 +460,102 @@ def cmd_contacts(args):
         print(f"в выборке «зеркальный» номер у {mine_v} из {len(mine)}")
 
 
+# --- disqualified managers of housing companies ----------------------------
+
+def _ms_date(v):
+    """The register mixes dd.mm.yyyy strings with epoch milliseconds."""
+    if v in (None, ""):
+        return None
+    if isinstance(v, (int, float)):
+        return time.strftime("%d.%m.%Y", time.gmtime(v / 1000))
+    return str(v)
+
+
+def disqualified_all():
+    """Whole register, current and excluded. Small: about 1.5 thousand records."""
+    out, page = [], 1
+    while True:
+        data = _post(DISQ, {"statuses": ["INCLUDED", "EXCLUDED"],
+                            "pageIndex": page, "elementsPerPage": PAGE})
+        items = data.get("list") or []
+        out.extend(items)
+        if not items or page * PAGE >= (data.get("total") or 0):
+            return out
+        page += 1
+
+
+def load_disqualified(con):
+    rows = disqualified_all()
+    con.execute("DELETE FROM gzhkh_disqualified")
+    for r in rows:
+        org = r.get("organization") or {}
+        inc = r.get("inclusionInformation") or {}
+        doc = inc.get("document") or {}
+        fio = " ".join(x for x in (r.get("personLastName"), r.get("personFirstName"),
+                                   r.get("personMiddleName")) if x)
+        con.execute(
+            """INSERT OR REPLACE INTO gzhkh_disqualified
+               (guid, registry_number, status, fio, fio_key, position, birth_date,
+                birth_place, org_name, org_inn, org_ogrn, court, case_number,
+                decision_date, included, excluded, loaded_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (r.get("guid"), r.get("registryNumber"), r.get("status"), fio,
+             db.norm_fio(fio), r.get("personPosition"), r.get("personBirthDate"),
+             r.get("personBirthPlace"), org.get("shortName") or org.get("fullName"),
+             org.get("inn"), org.get("ogrn"), inc.get("organizationName"),
+             doc.get("number"), doc.get("date"), _ms_date(r.get("actualInclusionDate")),
+             _ms_date(r.get("actualExclusionDate")), int(time.time())))
+    con.commit()
+    return len(rows)
+
+
+def disq_matches(con, inns=None):
+    """People and companies in our database that appear in the register.
+
+    org     — a company we track had a manager disqualified, whoever it was;
+    strong  — our person by name, and the register's company is linked to them;
+    name    — name only, a lead to check by date of birth.
+    """
+    out = []
+    q = "SELECT * FROM gzhkh_disqualified WHERE org_inn IN (SELECT inn FROM orgs)"
+    for r in con.execute(q):
+        if not inns or r["org_inn"] in inns:
+            out.append(("org", r, None))
+    for p in con.execute(
+            """SELECT DISTINCT p.pid, p.fio, p.inn FROM persons p
+               JOIN gzhkh_disqualified d ON d.fio_key = p.fio_key WHERE p.fio_key <> ''"""):
+        linked = {x["org_inn"] for x in con.execute(
+            "SELECT org_inn FROM roles WHERE pid=? UNION SELECT org_inn FROM ownership WHERE pid=?",
+            (p["pid"], p["pid"]))}
+        if inns and not (linked & set(inns)):
+            continue
+        for d in con.execute("SELECT * FROM gzhkh_disqualified WHERE fio_key=?",
+                             (db.norm_fio(p["fio"]),)):
+            out.append(("strong" if d["org_inn"] in linked else "name", d, p))
+    return out
+
+
+def cmd_disq(args):
+    con = db.connect(args.db)
+    if args.load or not con.execute("SELECT 1 FROM gzhkh_disqualified LIMIT 1").fetchone():
+        n = load_disqualified(con)
+        print(f"реестр дисквалифицированных руководителей УК: {n} записей")
+    inns = _targets(con, args) if (args.inn or args.case) else None
+    found = disq_matches(con, inns)
+    print("\n## Дисквалифицированные руководители УК (ГИС ЖКХ)\n")
+    if not found:
+        print("_совпадений нет_")
+    label = {"org": "у отслеживаемой компании был дисквалифицирован руководитель",
+             "strong": "**ФИО и организация совпали**",
+             "name": "совпало только ФИО — сверить дату рождения"}
+    for grade, d, p in sorted(found, key=lambda x: ("org", "strong", "name").index(x[0])):
+        who = p["fio"] if p else d["fio"]
+        print(f"- {who} — {label[grade]}")
+        print(f"    {d['position'] or '—'} в {d['org_name']} [{d['org_inn']}], "
+              f"{d['court'] or '—'}, дело {d['case_number'] or '—'}, "
+              f"в реестре с {d['included'] or '—'}{', исключён ' + d['excluded'] if d['excluded'] else ''}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Housing licences, houses and contacts from GIS ZhKH")
     ap.add_argument("--db", default=db.DEFAULT_DB)
@@ -486,6 +583,11 @@ def main():
     scope(p)
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(func=cmd_transfers)
+
+    p = sub.add_parser("disq", help="реестр дисквалифицированных руководителей УК и сверка с базой")
+    scope(p)
+    p.add_argument("--load", action="store_true", help="перекачать реестр")
+    p.set_defaults(func=cmd_disq)
 
     p = sub.add_parser("contacts", help="shared phones, e-mails, number blocks, with regional base rate")
     scope(p)

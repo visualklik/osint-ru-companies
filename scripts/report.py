@@ -65,6 +65,28 @@ def cmd_dossier(args):
             out.append(f"- **{r['fio']}** — {how}: {r['position']} в {r['org_name']}, "
                        f"срок {r['term']}, {r['start_date']} — {r['end_date']}")
 
+    try:
+        import gis_zhkh as _gz
+        gz_flags = _gz.disq_matches(con, [args.inn])
+    except Exception:
+        gz_flags = []
+    if gz_flags:
+        out.append("\n### Реестр дисквалифицированных руководителей УК (ГИС ЖКХ)\n")
+        for grade, d, p in gz_flags:
+            who = p["fio"] if p else d["fio"]
+            out.append(f"- **{who}** — {d['position'] or '—'} в {d['org_name']}, "
+                       f"{d['court'] or '—'}, дело {d['case_number'] or '—'}, с {d['included'] or '—'}"
+                       + ("" if grade != "name" else " (совпало только ФИО)"))
+
+    try:
+        rnp = con.execute("SELECT * FROM eis_rnp WHERE inn=?", (args.inn,)).fetchall()
+    except Exception:
+        rnp = []
+    if rnp:
+        out.append("\n### Реестр недобросовестных поставщиков (ЕИС)\n")
+        for r in rnp:
+            out.append(f"- {r['law']} № {r['number']} — {r['status']}, включено {r['included'] or '—'}")
+
     out.append("\n## Владельцы\n")
     owners = con.execute(
         """SELECT own.kind, own.share_pct, own.share_rub, p.fio, p.inn AS pinn,
@@ -159,6 +181,20 @@ def cmd_dossier(args):
             out.append("\n### Передачи домов\n")
             for (way, other), n in sorted(agg.items(), key=lambda x: -x[1]):
                 out.append(f"- {way} {n} дом(ов): {nm.get(other) or other} [{other}]")
+
+    try:
+        ec = con.execute(
+            """SELECT customer, COUNT(*) n, SUM(price) total, MIN(signed) first, MAX(signed) last
+               FROM eis_contracts WHERE supplier_inn=? GROUP BY customer_eis_id
+               ORDER BY total DESC""", (args.inn,)).fetchall()
+    except Exception:
+        ec = []
+    if ec:
+        n = sum(r["n"] for r in ec)
+        out.append(f"\n## Госзакупки (ЕИС): {n} контракт(ов) как поставщик, заказчиков {len(ec)}\n")
+        for r in ec[:15]:
+            out.append(f"- {r['customer'] or '—'} — {r['n']} контр., {money(r['total'])} руб "
+                       f"({r['first'] or '—'} — {r['last'] or '—'})")
 
     sout = con.execute(
         """SELECT decl_date, address, position, headcount FROM sout

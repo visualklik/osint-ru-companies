@@ -223,6 +223,17 @@ def cmd_links(args):
     if not pairs:
         print("_нет (загрузите: python3 gis_zhkh.py load --case <дело> --history --deep)_")
 
+    # A customer buying from several targets is a procurement tie: shared
+    # tenders, rotation of suppliers, or one beneficiary behind several firms.
+    print("\n## Общие заказчики в госзакупках (ЕИС)\n")
+    import eis
+    rows = eis.shared_customers(con, scope_inns)
+    for r in rows:
+        sups = ", ".join(f"{nm.get(i) or i} [{i}]" for i in r["suppliers"].split(","))
+        print(f"- {r['customer']} — {r['n']} поставщика: {sups}")
+    if not rows:
+        print("_нет (загрузите: python3 eis.py load --case <дело>)_")
+
     # Two targets meeting in the same case is an economic tie no registry records.
     print("\n## Общие арбитражные дела\n")
     court_scope = ""

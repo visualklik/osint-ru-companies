@@ -229,6 +229,33 @@ CREATE TABLE IF NOT EXISTS disqualified (
     authority TEXT, term TEXT, start_date TEXT, end_date TEXT, loaded_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS ix_disq_fio ON disqualified(fio_key);
+
+-- GIS ZhKH register of disqualified managers of housing companies (Housing Code
+-- art. 195). Unlike the FNS register it carries the organisation's INN, and
+-- it keeps excluded records, so past disqualifications stay visible.
+CREATE TABLE IF NOT EXISTS gzhkh_disqualified (
+    guid TEXT PRIMARY KEY, registry_number TEXT, status TEXT, fio TEXT,
+    fio_key TEXT, position TEXT, birth_date TEXT, birth_place TEXT,
+    org_name TEXT, org_inn TEXT, org_ogrn TEXT, court TEXT, case_number TEXT,
+    decision_date TEXT, included TEXT, excluded TEXT, loaded_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS ix_gd_fio ON gzhkh_disqualified(fio_key);
+CREATE INDEX IF NOT EXISTS ix_gd_inn ON gzhkh_disqualified(org_inn);
+
+-- Public procurement (EIS, zakupki.gov.ru): contracts where the company was
+-- the supplier, and the register of dishonest suppliers (44-FZ and 223-FZ).
+CREATE TABLE IF NOT EXISTS eis_contracts (
+    number TEXT PRIMARY KEY, supplier_inn TEXT, customer TEXT,
+    customer_eis_id TEXT, object TEXT, price REAL, status TEXT, signed TEXT,
+    until TEXT, law TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_eis_sup ON eis_contracts(supplier_inn);
+CREATE INDEX IF NOT EXISTS ix_eis_cust ON eis_contracts(customer_eis_id);
+CREATE TABLE IF NOT EXISTS eis_rnp (
+    number TEXT PRIMARY KEY, inn TEXT, name TEXT, law TEXT, status TEXT,
+    included TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_rnp_inn ON eis_rnp(inn);
 """
 
 
