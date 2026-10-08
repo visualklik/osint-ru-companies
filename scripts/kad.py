@@ -67,6 +67,19 @@ def _blocked_message():
     )
 
 
+def _antibot_message():
+    # The home page answered, so the address itself is not banned: the search
+    # API wants a token the site's JavaScript computes in a real browser.
+    # Reproducing that token would mean defeating the bot check, which this
+    # skill does not do.
+    return (
+        "kad.arbitr.ru: главная страница открылась, а поиск ответил 451. Адрес не "
+        "забанен — API поиска требует токен, который вычисляет JavaScript сайта в "
+        "настоящем браузере, и скрипту без него отказывает. Обходить эту защиту "
+        "скил не будет. Ищите по ИНН вручную на kad.arbitr.ru."
+    )
+
+
 def search(query, side=ANY, pages=2, pause=2.0, date_from=None, date_to=None, op=None):
     """Search cases where `query` (INN or name) is a party."""
     op = op or _session()
@@ -98,10 +111,10 @@ def search(query, side=ANY, pages=2, pause=2.0, date_from=None, date_to=None, op
                 payload = r.read()
         except urllib.error.HTTPError as e:
             if e.code == 451:
-                raise KadBlocked(_blocked_message())
+                raise KadBlocked(_antibot_message())
             raise KadError(f"HTTP {e.code} от kad.arbitr.ru")
         if payload.lstrip()[:1] in (b"<", b""):
-            raise KadBlocked(_blocked_message())
+            raise KadBlocked(_antibot_message())
         try:
             data = json.loads(payload.decode("utf-8"))
         except ValueError:
