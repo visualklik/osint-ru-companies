@@ -14,6 +14,7 @@ being mistaken for "no cases".
 import argparse
 import http.cookiejar
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -248,6 +249,74 @@ def cmd_show(args, con=None):
         print(f"- {r['date']} {r['number']} ({r['side']}, {r['type'] or '—'}) {r['url']}")
 
 
+def _name_key(name):
+    s = (name or "").upper().replace("Ё", "Е")
+    s = s.replace("ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ", " ").replace("УПРАВЛЯЮЩАЯ КОМПАНИЯ", "УК")
+    s = re.sub(r"[\"«»'“”]", " ", s)
+    s = re.sub(r"\bООО\b", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_pasted(text):
+    """Cases from the search table copied out of a browser.
+
+    The copy keeps the column order (date, number, judge, court, an optional
+    count of extra participants, then the parties) but drops the boundary
+    between plaintiffs and respondents, so parties get side "участник".
+    """
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    starts = [i for i in range(len(lines) - 1)
+              if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", lines[i])
+              and re.fullmatch(r"[АA]\d+-\d+/\d{4}", lines[i + 1])]
+    out = []
+    for k, i in enumerate(starts):
+        block = lines[i:starts[k + 1] if k + 1 < len(starts) else len(lines)]
+        d, num = block[0], block[1].replace("A", "А")
+        rest = block[2:]
+        judge = rest[0] if rest else None
+        court = rest[1] if len(rest) > 1 else None
+        parties = rest[2:]
+        if parties and parties[0].isdigit():
+            parties = parties[1:]
+        out.append({"number": num, "date": f"{d[6:]}-{d[3:5]}-{d[:2]}", "judge": judge,
+                    "court": court, "parties": parties})
+    return out
+
+
+def store_pasted(con, inn, cases):
+    known = {}
+    for r in con.execute("SELECT inn, name_full, name_short FROM orgs"):
+        for n in (r["name_full"], r["name_short"]):
+            if n:
+                known[_name_key(n)] = r["inn"]
+    me = {k for k, v in known.items() if v == inn}
+    for c in cases:
+        cid = "paste:" + c["number"]
+        con.execute(
+            """INSERT OR REPLACE INTO court_cases (case_id, number, date, court, judge, type, url)
+               VALUES (?,?,?,?,?,?,?)""",
+            (cid, c["number"], c["date"], c["court"], c["judge"], None, None))
+        # The search was by this INN, so the company is a party even when the
+        # row shows it under an old name or hides it among the extra participants.
+        con.execute("INSERT OR REPLACE INTO court_parties (case_id, inn, name, side) VALUES (?,?,?,?)",
+                    (cid, inn, next(iter(me), inn), "участник"))
+        for name in c["parties"]:
+            key = _name_key(name)
+            if key in me:
+                continue
+            con.execute("INSERT OR REPLACE INTO court_parties (case_id, inn, name, side) VALUES (?,?,?,?)",
+                        (cid, known.get(key, ""), name, "участник"))
+    con.commit()
+    return len(cases)
+
+
+def cmd_paste(args):
+    con = db.connect(args.db)
+    text = open(args.file, encoding="utf-8").read() if args.file else sys.stdin.read()
+    n = store_pasted(con, args.inn, parse_pasted(text))
+    print(f"[ok] {args.inn}: дел из вставки — {n}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Arbitration cases from kad.arbitr.ru")
     ap.add_argument("--db", default=db.DEFAULT_DB)
@@ -258,6 +327,11 @@ def main():
     p.add_argument("--pages", type=int, default=2, help="25 cases per page")
     p.add_argument("--pause", type=float, default=2.0)
     p.set_defaults(func=cmd_fetch)
+
+    p = sub.add_parser("paste", help="import the results table copied from the site")
+    p.add_argument("inn", help="ИНН, по которому искали")
+    p.add_argument("--file", help="файл с текстом; по умолчанию stdin")
+    p.set_defaults(func=cmd_paste)
 
     p = sub.add_parser("show", help="report on already stored cases")
     p.add_argument("inn")
